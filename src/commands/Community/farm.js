@@ -1,157 +1,162 @@
 import {
+  SlashCommandBuilder,
   ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
+  StringSelectMenuBuilder,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
-  EmbedBuilder,
-} from "discord.js";
-import { botConfig, getColor } from "../config/botConfig.js"; // adjust path to your actual config file
-import { logger } from "../utils/logger.js"; // adjust path if different
+  ComponentType,
+} from 'discord.js';
+import { createEmbed } from '../../utils/embeds.js';
+import { logger } from '../../utils/logger.js';
+import { ErrorTypes, replyUserError } from '../../utils/errorHandler.js';
 
-const CUSTOM_ID_PREFIX = "farm";
+// Channel IDs where farm submissions are allowed. Leave empty to allow everywhere.
+const ALLOWED_CHANNEL_IDS = [
+  // "1503704175605710968",
+];
 
-// ---------------------------------------------------------------
-// 1) PREFIX COMMAND: "!farm"
-// Wire this into however your bot loads prefix commands.
-// Most command loaders expect a shape like { name, execute(message, args, client) }.
-// ---------------------------------------------------------------
-export default {
-  name: "farm",
-  description: "Start a farm submission (Experience / Tapes / Boosts).",
-
-  async execute(message) {
-    const farmConfig = botConfig.farm;
-
-    // Restrict to specific channels, if configured.
-    const allowed = farmConfig?.allowedChannels ?? [];
-    if (allowed.length > 0 && !allowed.includes(message.channel.id)) {
-      const reply = await message.reply(
-        "🚫 The `!farm` command can't be used in this channel."
-      );
-      setTimeout(() => {
-        reply.delete().catch(() => {});
-        message.delete().catch(() => {});
-      }, 5000);
-      return;
-    }
-
-    const categories = farmConfig?.categories ?? {};
-    const row = new ActionRowBuilder().addComponents(
-      Object.entries(categories).map(([key, cat]) =>
-        new ButtonBuilder()
-          .setCustomId(`${CUSTOM_ID_PREFIX}_category_${key}`)
-          .setLabel(cat.label)
-          .setEmoji(cat.emoji)
-          .setStyle(ButtonStyle.Primary)
-      )
-    );
-
-    const embed = new EmbedBuilder()
-      .setColor(getColor("primary"))
-      .setTitle("📋 Farm Submission")
-      .setDescription("Choose a category below to open the submission form.")
-      .setFooter({ text: botConfig.embeds.footer.text });
-
-    await message.reply({ embeds: [embed], components: [row] });
-  },
+const CATEGORIES = {
+  scb: { label: 'SCB', emoji: '💰' },
+  experience: { label: 'Experience', emoji: '⭐' },
+  tapes: { label: 'Tapes', emoji: '📼' },
 };
 
-// ---------------------------------------------------------------
-// 2) INTERACTION HANDLING
-// Call `handleFarmInteraction(interaction)` from your central
-// interactionCreate event file, e.g.:
-//
-//   import { handleFarmInteraction } from "../commands/farm.js";
-//   client.on("interactionCreate", async (interaction) => {
-//     if (interaction.customId?.startsWith("farm_")) {
-//       return handleFarmInteraction(interaction);
-//     }
-//     // ...your existing routing
-//   });
-// ---------------------------------------------------------------
-export async function handleFarmInteraction(interaction) {
-  try {
-    // --- Step A: button clicked -> show modal ---
-    if (interaction.isButton() && interaction.customId.startsWith(`${CUSTOM_ID_PREFIX}_category_`)) {
-      const categoryKey = interaction.customId.replace(`${CUSTOM_ID_PREFIX}_category_`, "");
-      const category = botConfig.farm?.categories?.[categoryKey];
-      if (!category) return;
+export default {
+  data: new SlashCommandBuilder()
+    .setName('farm')
+    .setDescription('Submit a farm entry (SCB / Experience / Tapes)'),
 
-      const modal = new ModalBuilder()
-        .setCustomId(`${CUSTOM_ID_PREFIX}_modal_${categoryKey}`)
-        .setTitle(`Farm Submission — ${category.label}`);
+  async execute(interaction) {
+    if (!interaction.guild) {
+      return await replyUserError(interaction, {
+        type: ErrorTypes.UNKNOWN,
+        message: 'This command can only be used in a server.',
+      });
+    }
 
-      const modelInput = new TextInputBuilder()
-        .setCustomId("model")
-        .setLabel("Model")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true);
+    if (
+      ALLOWED_CHANNEL_IDS.length > 0 &&
+      !ALLOWED_CHANNEL_IDS.includes(interaction.channel.id)
+    ) {
+      return await replyUserError(interaction, {
+        type: ErrorTypes.PERMISSION,
+        message: 'This command can only be used in the designated farm channel(s).',
+      });
+    }
 
-      const usernameInput = new TextInputBuilder()
-        .setCustomId("username")
-        .setLabel("Username")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true);
-
-      const amountInput = new TextInputBuilder()
-        .setCustomId("amount")
-        .setLabel("Amount")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true);
-
-      const notesInput = new TextInputBuilder()
-        .setCustomId("notes")
-        .setLabel("Notes")
-        .setStyle(TextInputStyle.Paragraph)
-        .setRequired(false);
-
-      modal.addComponents(
-        new ActionRowBuilder().addComponents(modelInput),
-        new ActionRowBuilder().addComponents(usernameInput),
-        new ActionRowBuilder().addComponents(amountInput),
-        new ActionRowBuilder().addComponents(notesInput)
+    // --- Step 1: show the service dropdown ---
+    const selectMenu = new StringSelectMenuBuilder()
+      .setCustomId('farm_category_select')
+      .setPlaceholder('Choose a service')
+      .addOptions(
+        Object.entries(CATEGORIES).map(([key, cat]) => ({
+          label: cat.label,
+          value: key,
+          emoji: cat.emoji,
+        })),
       );
 
-      await interaction.showModal(modal);
+    const row = new ActionRowBuilder().addComponents(selectMenu);
+
+    const introEmbed = createEmbed({
+      title: 'Farm Submission',
+      description: 'Choose a service below to open the submission form.',
+    });
+
+    await interaction.reply({ embeds: [introEmbed], components: [row] });
+    const message = await interaction.fetchReply();
+
+    // --- Step 2: wait for a selection ---
+    const selectInteraction = await message
+      .awaitMessageComponent({
+        componentType: ComponentType.StringSelect,
+        filter: (i) => i.user.id === interaction.user.id && i.customId === 'farm_category_select',
+        time: 5 * 60 * 1000, // 5 minutes
+      })
+      .catch(() => null);
+
+    if (!selectInteraction) {
+      await interaction.editReply({ components: [] }).catch(() => {});
       return;
     }
 
-    // --- Step B: modal submitted -> post embed ---
-    if (interaction.isModalSubmit() && interaction.customId.startsWith(`${CUSTOM_ID_PREFIX}_modal_`)) {
-      const categoryKey = interaction.customId.replace(`${CUSTOM_ID_PREFIX}_modal_`, "");
-      const category = botConfig.farm?.categories?.[categoryKey];
+    const categoryKey = selectInteraction.values[0];
+    const category = CATEGORIES[categoryKey];
 
-      const model = interaction.fields.getTextInputValue("model");
-      const username = interaction.fields.getTextInputValue("username");
-      const amount = interaction.fields.getTextInputValue("amount");
-      const notes = interaction.fields.getTextInputValue("notes") || "—";
+    // --- Step 3: show the modal form ---
+    const modal = new ModalBuilder()
+      .setCustomId(`farm_modal_${categoryKey}`)
+      .setTitle(`Farm Submission - ${category.label}`);
 
-      const embed = new EmbedBuilder()
-        .setColor(getColor("primary"))
-        .setTitle(`📋 New Farm Submission — ${category?.label ?? categoryKey}`)
-        .addFields(
-          { name: "Model", value: model, inline: true },
-          { name: "Username", value: username, inline: true },
-          { name: "Amount", value: amount, inline: true },
-          { name: "Notes", value: notes, inline: false }
-        )
-        .setFooter({
-          text: `Submitted by ${interaction.user.tag}`,
-          iconURL: interaction.user.displayAvatarURL(),
-        })
-        .setTimestamp();
+    const modelInput = new TextInputBuilder()
+      .setCustomId('model')
+      .setLabel('Model')
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true);
 
-      await interaction.reply({ embeds: [embed] });
-      return;
-    }
-  } catch (err) {
-    logger.error("Error handling farm interaction:", err);
-    if (interaction.isRepliable() && !interaction.replied) {
-      await interaction
-        .reply({ content: "Something went wrong with that submission.", ephemeral: true })
-        .catch(() => {});
-    }
-  }
-}
+    const usernameInput = new TextInputBuilder()
+      .setCustomId('username')
+      .setLabel('Username')
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true);
+
+    const amountInput = new TextInputBuilder()
+      .setCustomId('amount')
+      .setLabel('Amount')
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true);
+
+    const notesInput = new TextInputBuilder()
+      .setCustomId('notes')
+      .setLabel('Notes')
+      .setStyle(TextInputStyle.Paragraph)
+      .setRequired(false);
+
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(modelInput),
+      new ActionRowBuilder().addComponents(usernameInput),
+      new ActionRowBuilder().addComponents(amountInput),
+      new ActionRowBuilder().addComponents(notesInput),
+    );
+
+    await selectInteraction.showModal(modal);
+
+    // --- Step 4: wait for the modal submission ---
+    const submitted = await selectInteraction
+      .awaitModalSubmit({
+        time: 5 * 60 * 1000,
+        filter: (i) =>
+          i.customId === `farm_modal_${categoryKey}` && i.user.id === interaction.user.id,
+      })
+      .catch(() => null);
+
+    if (!submitted) return;
+
+    const model = submitted.fields.getTextInputValue('model');
+    const username = submitted.fields.getTextInputValue('username');
+    const amount = submitted.fields.getTextInputValue('amount');
+    const notes = submitted.fields.getTextInputValue('notes') || '-';
+
+    // --- Step 5: post the result as an embed ---
+    const resultEmbed = createEmbed({
+      title: `New Farm Submission - ${category.label}`,
+      fields: [
+        { name: 'Model', value: model, inline: true },
+        { name: 'Username', value: username, inline: true },
+        { name: 'Amount', value: amount, inline: true },
+        { name: 'Notes', value: notes, inline: false },
+      ],
+      footer: `Submitted by ${submitted.user.tag}`,
+      timestamp: true,
+    });
+
+    await submitted.reply({ embeds: [resultEmbed] });
+
+    logger.info('Farm submission created', {
+      userId: interaction.user.id,
+      guildId: interaction.guild.id,
+      category: categoryKey,
+    });
+  },
+};
