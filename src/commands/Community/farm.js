@@ -13,7 +13,7 @@ import { ErrorTypes, replyUserError } from '../../utils/errorHandler.js';
 
 // Channel IDs where farm submissions are allowed. Leave empty to allow everywhere.
 const ALLOWED_CHANNEL_IDS = [
-  // "1503704175605710968",
+  // "123456789012345678",
 ];
 
 const CATEGORIES = {
@@ -43,6 +43,14 @@ export default {
         type: ErrorTypes.PERMISSION,
         message: 'This command can only be used in the designated farm channel(s).',
       });
+    }
+
+    // If this was triggered via "!farm" (prefix command), react to the
+    // original message with 🔥. Slash-command invocations have no
+    // message to react to, so this only fires for the prefix path.
+    const triggerMessage = interaction._responseCoordinator?.message;
+    if (triggerMessage) {
+      await triggerMessage.react('🔥').catch(() => {});
     }
 
     // --- Step 1: show the service dropdown ---
@@ -145,6 +153,7 @@ export default {
         { name: 'Model', value: model, inline: true },
         { name: 'Username', value: username, inline: true },
         { name: 'Amount', value: amount, inline: true },
+        { name: 'Submitted By', value: `${submitted.user} (${submitted.user.tag})`, inline: false },
         { name: 'Notes', value: notes, inline: false },
       ],
       footer: `Submitted by ${submitted.user.tag}`,
